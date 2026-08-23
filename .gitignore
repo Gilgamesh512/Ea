@@ -1,1 +1,20 @@
+# Environment / secrets
 .env
+.env.*
+!.env.example
+
+# n8n persistent state
+n8n/n8n_data/
+n8n/.n8n/
+
+# Ollama models
+ollama/ollama_data/
+
+# DefectDojo runtime/source copied or cloned locally
+defectdojo/runtime/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

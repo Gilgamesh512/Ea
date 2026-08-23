@@ -1,76 +1,161 @@
-\# 🛡️ AegisGil - Automated SOAR System
+# Ea — Automated SOAR Platform
 
+> Security Orchestration, Automation and Response with Wazuh, n8n and Ollama.
 
+Ea is a modular SOAR deployment focused on automating the flow from security detection to analysis, decision support, and response.
 
-Dự án cá nhân tập trung vào việc tự động hóa phản ứng an ninh (Security Orchestration, Automation, and Response) kết hợp giữa \*\*pfSense NGFW\*\*, \*\*n8n\*\*, và các công cụ bảo mật.
+## Architecture
 
+```text
+Wazuh
+  │
+  │ Security Alert
+  ▼
+n8n
+  │
+  ├──► Ollama
+  │      └── Local AI-assisted analysis
+  │
+  ├──► DefectDojo
+  │      └── Vulnerability / finding management
+  │
+  └──► Response integrations
+         └── pfSense or other enforcement systems
+```
 
+### Component responsibilities
 
-\## 🚀 Hướng dẫn triển khai (Deployment Guide)
+| Component | Role |
+|---|---|
+| Wazuh | Security monitoring and detection |
+| n8n | Security orchestration and automation |
+| Ollama | Local AI-assisted analysis and decision support |
+| DefectDojo | Vulnerability and security finding management |
+| pfSense / other controls | Response and enforcement |
 
+Ea does **not** delegate unrestricted response actions to the LLM. Ollama is an analysis/decision-support component; deterministic n8n workflows and explicit policies should control response actions.
 
+## Repository structure
 
-\### 1. Yêu cầu hệ thống (Prerequisites)
+```text
+Ea/
+├── defectdojo/
+│   └── README.md
+├── n8n/
+│   └── docker-compose.yml
+├── ollama/
+│   └── docker-compose.yml
+├── .env.example
+├── .gitignore
+└── README.md
+```
 
-\*\*\*Docker Desktop\*\*: Cần thiết để chạy các Container.
+## Prerequisites
 
-\*\*\*WSL 2\*\*: Khuyến nghị cài đặt để Docker chạy mượt hơn trên Windows.
+- Docker Desktop
+- Docker Compose
+- Wazuh deployed separately or reachable from the n8n host
+- NVIDIA Container Toolkit / NVIDIA Docker support if Ollama will use an NVIDIA GPU
 
+## Configuration
 
+Copy the example environment file:
 
-\### 2. Cài đặt n8n (Automation Hub)
+```bash
+cp .env.example .env
+```
 
-Sử dụng Docker Compose để triển khai n8n tại `localhost:5678`.
+On Windows PowerShell:
 
-\*\*\*Timezone\*\*: Asia/Ho\_Chi\_Minh.
+```powershell
+Copy-Item .env.example .env
+```
 
-\*\*\*Volumes\*\*: Lưu trữ dữ liệu tại `./n8n\_data`.
+Set the Wazuh, DefectDojo, and Ollama connection values before running workflows.
 
+**Never commit `.env`.** API credentials and passwords belong only in the local `.env` file or a dedicated secret manager.
 
+## Deploy n8n
 
-\### 3. Cấu hình pfSense REST API
+```bash
+cd n8n
+docker compose up -d
+```
 
-Để n8n có thể điều khiển Firewall, cần thiết lập:
+n8n is exposed on:
 
-\*\*\*Admin Access\*\*: Chỉnh `Max Processes` thành 8 và bật `WebGUI Login Autocomplete`.
+```text
+http://localhost:5678
+```
 
-\*\*\*Networking\*\*: Tắt (Disable) các mục `Hardware Checksum/TCP/Large Receive Offloading`.
+Persistent n8n data is stored in `n8n/n8n_data/` and is ignored by Git.
 
-\*\*\*REST API v2\*\*: Cài đặt package qua lệnh `pkg-static add` \[cite: 10] \[cite\_start]và tạo API Key riêng.
+## Deploy Ollama
 
+```bash
+cd ollama
+docker compose up -d
+```
 
+Ollama is exposed on:
 
-\---
+```text
+http://localhost:11434
+```
 
+The deployment is configured for NVIDIA GPU access. If the host does not provide a supported NVIDIA runtime, remove the GPU reservation from `ollama/docker-compose.yml` before starting the service.
 
+Pull the model required by the workflow, for example:
 
-\## ⚙️ Quy trình tự động hóa (n8n Workflows)
+```bash
+docker exec -it ea-ollama ollama pull <model>
+```
 
+Use the model name expected by the n8n workflow.
 
+## DefectDojo
 
-Dự án sử dụng các phương thức REST API để quản lý Alias trên pfSense:
+DefectDojo is intentionally treated as a separate vulnerability/finding-management service rather than as the SOAR engine.
 
-\*\*\*GET\*\*: Kiểm tra danh sách và ID của các Alias hiện có.
+The official DefectDojo Docker Compose deployment requires the complete DefectDojo source tree because its compose file builds application images from files in that repository. Do not keep a standalone copied compose file and assume it is self-contained.
 
-\*\*\*POST\*\*: Khởi tạo danh sách đen (SOAR\_Blacklist) và thêm IP mới.
+See `defectdojo/README.md` for the deployment procedure.
 
-\*\*\*PATCH\*\*: Cập nhật/Nhồi thêm IP vào danh sách đã tồn tại thông qua ID.
+## Integration flow
 
-\*\*\*APPLY\*\*: Kích hoạt các thay đổi để có hiệu lực trên Firewall (Chạy 1 lần duy nhất sau khi cập nhật).
+The intended automation flow is:
 
+```text
+1. Wazuh detects an event
+        ↓
+2. n8n receives / retrieves the alert
+        ↓
+3. n8n normalizes the event and extracts indicators
+        ↓
+4. Ollama provides local AI-assisted analysis
+        ↓
+5. n8n applies deterministic rules / policy
+        ↓
+6. n8n performs the approved response
+        ↓
+7. DefectDojo and/or other systems receive the resulting finding
+```
 
+The exact workflow implementation belongs in n8n. This repository currently provides the deployment foundation; it should not claim workflows or integrations that are not actually committed.
 
-\---
+## Security notes
 
+- Do not commit `.env`, API keys, passwords, or tokens.
+- Do not expose n8n or Ollama directly to the Internet without appropriate access controls.
+- Use dedicated API credentials with the minimum required privileges.
+- Treat LLM output as untrusted input.
+- Validate and constrain automated response actions with deterministic policies.
+- Review firewall/API permissions before enabling automatic containment.
 
+## Project scope
 
-\## 🛡️ Chính sách bảo mật (Firewall Rules)
+Ea is an automation platform, not a replacement for Wazuh, DefectDojo, or the firewall. Each component has a defined responsibility and communicates through controlled integrations.
 
+## Status
 
-
-Sau khi nhồi IP vào `SOAR\_Blacklist`, hệ thống sẽ thực thi chặn tại:
-
-1.\*\*WAN\*\*: Chặn (Block/Reject) mọi gói tin từ nguồn trong Blacklist đến hệ thống.
-
-2.\*\*LAN\*\*: Ngăn chặn máy nội bộ kết nối đến các IP xấu trong Blacklist.
-
+The deployment layer is intentionally modular. Detection, orchestration, AI-assisted analysis, vulnerability management, and response integrations can be enabled independently as the project evolves.

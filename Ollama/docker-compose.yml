@@ -1,16 +1,17 @@
 services:
   ollama:
     image: ollama/ollama:latest
-    container_name: aegisgil
-    volumes:
-      - ./ollama_data:/root/.ollama  # Đã chuyển vào Aegis_Gil nè Gil!
+    container_name: ea-ollama
+    restart: unless-stopped
     ports:
       - "11434:11434"
+    volumes:
+      - ./ollama_data:/root/.ollama
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
               count: 1
-              capabilities: [gpu]
-    restart: always
+              capabilities:
+                - gpu
