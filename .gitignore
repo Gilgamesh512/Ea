@@ -1,20 +1,37 @@
-# Environment / secrets
+# Environment & Secrets
 .env
 .env.*
 !.env.example
+*.key
+*Key.txt
+key.txt
+Key REST API.txt
 
-# n8n persistent state
-n8n/n8n_data/
-n8n/.n8n/
+# Persistent Volume Data (Docker)
+**/data/
+**/n8n_data/
+**/loki-data/
+**/grafana-data/
+**/ollama_data/
+*.sqlite
+*.sqlite-journal
 
-# Ollama models
-ollama/ollama_data/
+# Large Media & Video Files
+*.mp4
+*.mkv
+*.avi
+*.mov
 
-# DefectDojo runtime/source copied or cloned locally
-defectdojo/runtime/
+# Heavy Security Tools & Hash Lab Binaries (Keep locally in tools/, do not push to Git)
+tools/hashcat-*/
+tools/john-*/
+hashcat-*/
+john-*/
 
-# OS / editor
+# OS & Editor Files
 .DS_Store
 Thumbs.db
+desktop.ini
 .vscode/
 .idea/
+*.log

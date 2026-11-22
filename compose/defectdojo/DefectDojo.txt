@@ -1,0 +1,15 @@
+# ===============================================
+# HƯỚNG DẪN KHỞI CHẠY VÀ LẤY MẬT KHẨU DEFECTDOJO CHO EA
+# ===============================================
+
+# 1. Khởi chạy toàn bộ dịch vụ:
+docker compose up -d
+
+# 2. Lấy mật khẩu khởi tạo cho tài khoản Admin:
+docker logs ea-defectdojo-initializer | findstr "Admin password:"
+# Hoặc:
+docker compose logs initializer | findstr "Admin password:"
+
+# 3. Truy cập WebUI:
+# URL: http://localhost:8080
+# User: admin

@@ -1,0 +1,312 @@
+{
+  "name": "EA SOAR - Automated Detection & Safe Response Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "wazuh-alert",
+        "responseMode": "onReceived",
+        "responseData": "allEntries",
+        "options": {}
+      },
+      "id": "node-webhook-wazuh",
+      "name": "Wazuh Alert Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        300
+      ],
+      "webhookId": "ea-soar-wazuh-trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ====================================================================\n// BỘ LỌC AN TOÀN CHỐNG CHẶN NHẦM \"NGƯỜI NHÀ\" (ANTI-SELF-LOCKOUT FILTER)\n// ====================================================================\nconst item = $input.first().json;\n\n// 1. Trích xuất thông tin cảnh báo từ payload (Hỗ trợ Wazuh, Suricata hoặc Test Payload)\nconst srcIp = item.data?.src_ip || item.data?.srcip || item.src_ip || item.ip || item.client_ip || '';\nconst ruleLevel = Number(item.rule?.level || item.level || 0);\nconst ruleDesc = item.rule?.description || item.description || 'Chưa có mô tả cảnh báo';\nconst ruleId = item.rule?.id || item.id || 'N/A';\nconst timestamp = item.timestamp || new Date().toISOString();\n\n// 2. Danh sách trắng tài sản trọng yếu & người nhà (Critical Whitelist)\nconst protectedExactIps = [\n  '127.0.0.1',\n  '192.168.2.1',   // pfSense Gateway\n  '192.168.2.10',  // Wazuh SIEM Manager\n  '192.168.2.50',  // n8n SOAR Host\n  '1.1.1.1',       // Cloudflare DNS\n  '8.8.8.8'        // Google DNS\n];\n\n// 3. Hàm kiểm tra IP có thuộc dải mạng nội bộ an toàn (Private Subnet)\nfunction isPrivateOrLocal(ip) {\n  if (!ip) return true;\n  if (protectedExactIps.includes(ip)) return true;\n  // Kiểm tra Loopback\n  if (ip.startsWith('127.')) return true;\n  // Kiểm tra dải LAN quản trị (192.168.2.x)\n  if (ip.startsWith('192.168.2.')) return true;\n  // Kiểm tra RFC 1918 Private Ranges (Cảnh báo nội bộ không tự động block tường lửa biên)\n  if (ip.startsWith('10.') || ip.startsWith('192.168.') || /^172\\.(1[6-9]|2[0-9]|3[0-1])\\./.test(ip)) {\n    return true;\n  }\n  return false;\n}\n\nconst isProtected = isPrivateOrLocal(srcIp);\n\n// 4. Quyết định điều phối\n// Chỉ xem xét chặn khi: IP hợp lệ + KHÔNG PHẢI người nhà + Mức độ cảnh báo nghiêm trọng (Level >= 7)\nlet shouldBlock = false;\nlet decisionReason = '';\n\nif (!srcIp) {\n  decisionReason = 'Không tìm thấy IP nguồn trong payload cảnh báo.';\n} else if (isProtected) {\n  decisionReason = `IP ${srcIp} thuộc danh sách người nhà / tài sản mạng nội bộ. KHÔNG CHẶN để chống tự ngắt kết nối hệ thống (Anti-Lockout).`;\n} else if (ruleLevel < 7) {\n  decisionReason = `Mức độ cảnh báo Level ${ruleLevel} thấp hơn ngưỡng thực thi (Ngưỡng yêu cầu: >= 7). Chỉ ghi log theo dõi.`;\n} else {\n  shouldBlock = true;\n  decisionReason = `Phát hiện mối đe dọa từ IP ngoại vi ${srcIp} với mức độ nghiêm trọng Level ${ruleLevel}. Kích hoạt quy trình ngăn chặn trên pfSense.`;\n}\n\nreturn {\n  src_ip: srcIp,\n  rule_level: ruleLevel,\n  rule_description: ruleDesc,\n  rule_id: ruleId,\n  timestamp: timestamp,\n  is_protected: isProtected,\n  should_block: shouldBlock,\n  decision_reason: decisionReason,\n  raw_event: item\n};"
+      },
+      "id": "node-safe-filter",
+      "name": "Bộ lọc An toàn & Kiểm tra Người nhà",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.should_block }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "node-if-should-block",
+      "name": "Cần kích hoạt Chặn?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://host.docker.internal:11434/api/generate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"deepseek-r1:8b\",\n  \"prompt\": \"Bạn là chuyên gia phân tích SOC. Hãy tóm tắt ngắn gọn mối đe dọa sau trong 2 câu và xác nhận hành động chặn IP có hợp lý không:\\nIP Tấn công: \" + $json.src_ip + \"\\nCảnh báo: \" + $json.rule_description + \" (Level: \" + $json.rule_level + \")\\nLý do: \" + $json.decision_reason,\n  \"stream\": false\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "node-ollama-ai",
+      "name": "Ollama AI Phân tích Nguy cơ",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        920,
+        200
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://192.168.2.1/api/v2/firewall/aliases",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "YOUR_PFSENSE_API_KEY"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "id": "node-pfsense-get-aliases",
+      "name": "pfSense Tra cứu ID Alias Động",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1140,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ====================================================================\n// TÌM ĐÚNG ID VÀ CỘNG DỒN IP VÀO DANH SÁCH (KHÔNG GHI ĐÈ / OVERWRITE)\n// ====================================================================\nconst aliasesResponse = $input.first().json;\nconst filterData = $('Bộ lọc An toàn & Kiểm tra Người nhà').first().json;\nconst targetIp = filterData.src_ip;\n\n// Tìm danh sách alias SOAR_Blacklist\nconst aliasesList = aliasesResponse.data || aliasesResponse || [];\nlet targetAlias = null;\n\nif (Array.isArray(aliasesList)) {\n  targetAlias = aliasesList.find(a => a.name === 'SOAR_Blacklist');\n} else if (typeof aliasesList === 'object') {\n  for (const key in aliasesList) {\n    if (aliasesList[key].name === 'SOAR_Blacklist') {\n      targetAlias = aliasesList[key];\n      break;\n    }\n  }\n}\n\nif (!targetAlias) {\n  throw new Error('Không tìm thấy Alias tên \"SOAR_Blacklist\" trên pfSense. Vui lòng tạo Alias này trước trên WebGUI.');\n}\n\nconst aliasId = targetAlias.id;\nlet currentAddresses = Array.isArray(targetAlias.address) ? [...targetAlias.address] : [];\n\n// Kiểm tra nếu IP đã tồn tại thì không thêm lặp lại\nlet isNewIp = false;\nif (!currentAddresses.includes(targetIp)) {\n  currentAddresses.push(targetIp);\n  isNewIp = true;\n}\n\nreturn {\n  alias_id: aliasId,\n  target_ip: targetIp,\n  is_new_ip: isNewIp,\n  payload_patch: {\n    id: aliasId,\n    name: 'SOAR_Blacklist',\n    address: currentAddresses\n  },\n  ai_summary: $('Ollama AI Phân tích Nguy cơ').first()?.json?.response || 'Ollama phản hồi ngoài giới hạn thời gian (Timeout).',\n  decision_reason: filterData.decision_reason,\n  rule_description: filterData.rule_description,\n  rule_level: filterData.rule_level\n};"
+      },
+      "id": "node-pfsense-prepare-patch",
+      "name": "Chuẩn bị Payload Nối IP an toàn",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "https://192.168.2.1/api/v2/firewall/alias",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "YOUR_PFSENSE_API_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload_patch) }}",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "id": "node-pfsense-patch-alias",
+      "name": "pfSense Cập nhật Blacklist",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1580,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://192.168.2.1/api/v2/firewall/apply",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "YOUR_PFSENSE_API_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{}",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "id": "node-pfsense-apply-changes",
+      "name": "pfSense Thực thi Apply Luật",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1800,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Tạo thông báo kết quả thực thi thành công\nconst prepData = $('Chuẩn bị Payload Nối IP an toàn').first().json;\nreturn {\n  status: 'BLOCKED',\n  action: 'Đã tự động chặn IP trên tường lửa pfSense',\n  target_ip: prepData.target_ip,\n  rule_description: prepData.rule_description,\n  rule_level: prepData.rule_level,\n  ai_analysis: prepData.ai_summary,\n  timestamp: new Date().toISOString()\n};"
+      },
+      "id": "node-summary-blocked",
+      "name": "Báo cáo: Đã Chặn Thành Công",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2020,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Tạo thông báo từ chối chặn (Bảo vệ Người nhà hoặc Cảnh báo thấp)\nconst filterData = $('Bộ lọc An toàn & Kiểm tra Người nhà').first().json;\nreturn {\n  status: filterData.is_protected ? 'SAFEGUARD_ACTIVATED' : 'IGNORED_LOW_SEVERITY',\n  action: filterData.is_protected ? 'BẢO VỆ NGƯỜI NHÀ: Từ chối chặn để chống tê liệt mạng' : 'BỎ QUA: Mức cảnh báo không đủ ngưỡng kích hoạt',\n  target_ip: filterData.src_ip,\n  rule_description: filterData.rule_description,\n  rule_level: filterData.rule_level,\n  reason: filterData.decision_reason,\n  timestamp: new Date().toISOString()\n};"
+      },
+      "id": "node-summary-protected",
+      "name": "Báo cáo: Kích hoạt Bảo vệ An toàn",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        420
+      ]
+    }
+  ],
+  "connections": {
+    "Wazuh Alert Webhook": {
+      "main": [
+        [
+          {
+            "node": "Bộ lọc An toàn & Kiểm tra Người nhà",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bộ lọc An toàn & Kiểm tra Người nhà": {
+      "main": [
+        [
+          {
+            "node": "Cần kích hoạt Chặn?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cần kích hoạt Chặn?": {
+      "main": [
+        [
+          {
+            "node": "Ollama AI Phân tích Nguy cơ",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Báo cáo: Kích hoạt Bảo vệ An toàn",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama AI Phân tích Nguy cơ": {
+      "main": [
+        [
+          {
+            "node": "pfSense Tra cứu ID Alias Động",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "pfSense Tra cứu ID Alias Động": {
+      "main": [
+        [
+          {
+            "node": "Chuẩn bị Payload Nối IP an toàn",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chuẩn bị Payload Nối IP an toàn": {
+      "main": [
+        [
+          {
+            "node": "pfSense Cập nhật Blacklist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "pfSense Cập nhật Blacklist": {
+      "main": [
+        [
+          {
+            "node": "pfSense Thực thi Apply Luật",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "pfSense Thực thi Apply Luật": {
+      "main": [
+        [
+          {
+            "node": "Báo cáo: Đã Chặn Thành Công",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

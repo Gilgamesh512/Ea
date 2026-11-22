@@ -1,0 +1,14 @@
+# ==========================================
+# CÁC LỆNH QUẢN LÝ VÀ CHẠY MÔ HÌNH AI CHO EA
+# ==========================================
+
+# 1. Lệnh tải Model AI về máy:
+docker exec -it ea-ollama ollama pull deepseek-r1:8b
+docker exec -it ea-ollama ollama pull qwen2.5-coder:7b
+
+# 2. Lệnh kiểm tra danh sách Model đã tải:
+docker exec -it ea-ollama ollama list
+
+# 3. Lệnh chạy và test trực tiếp Model qua terminal:
+docker exec -it ea-ollama ollama run deepseek-r1:8b
+docker exec -it ea-ollama ollama run qwen2.5-coder:7b

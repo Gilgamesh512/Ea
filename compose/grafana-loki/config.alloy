@@ -1,0 +1,20 @@
+// Hứng log từ pfSense qua cổng 1514 UDP
+loki.source.syslog "pfsense_receiver" {
+  listener {
+    address  = "0.0.0.0:1514"
+    protocol = "udp"
+    labels   = { 
+        job = "pfsense", 
+        project = "EA",
+        component = "firewall"
+    }
+  }
+  forward_to = [loki.write.local_loki.receiver]
+}
+
+// Đẩy log đã nhận vào Loki
+loki.write "local_loki" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
